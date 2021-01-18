@@ -93,6 +93,11 @@ func TestLgpReader_StreamRead(t *testing.T) {
 			"./tests/20210108100000.lgp",
 			10,
 			1,
+		}, {
+			"1 events",
+			"./tests/big/20210117000000.lgp",
+			10,
+			1,
 		},
 	}
 	for _, tt := range tests {
@@ -108,6 +113,58 @@ func TestLgpReader_StreamRead(t *testing.T) {
 
 			if got := len(events); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("StreamRead() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLgpReader_Read(t *testing.T) {
+
+	tests := []struct {
+		name  string
+		file  string
+		count int
+		index int
+		want  *Event
+	}{
+		{"simple",
+			"./tests/20210108100000.lgp",
+			5,
+			4,
+			&Event{},
+		},
+		{"simple",
+			"./tests/20210108100000.lgp",
+			500,
+			0,
+			&Event{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, err := NewLgpReader(tt.file)
+			if err != nil {
+				t.Error(err)
+			}
+			var got []*Event
+
+			for i := 0; i <= tt.count; i++ {
+				node := r.Read()
+				if node == nil {
+					break
+				}
+
+				//if node.Event.Scope() != EventScopeUser {
+				//	continue
+				//}
+				got = append(got, node)
+				//pp.Println("event index", i)
+			}
+
+			pp.Println(got)
+
+			if !reflect.DeepEqual(got[tt.index], tt.want) {
+				t.Errorf("Read() = %v, want %v", got[tt.index], tt.want)
 			}
 		})
 	}

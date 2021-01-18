@@ -9,12 +9,15 @@ import (
 )
 
 type LgfReader struct {
-	stream            io.Reader
-	objects           map[string]string
-	referencedObjects map[string][]string
-	parser            *brackets.Parser
-	curNode           brackets.Node
-	mu                sync.RWMutex
+	stream  io.Reader
+	objects *sync.Map
+	parser  *brackets.Parser
+	curNode brackets.Node
+	muRead  *sync.RWMutex
+
+	needRead bool
+
+	waitRead chan struct{}
 }
 
 const (
@@ -35,10 +38,11 @@ const (
 func NewLgfReader(r io.Reader) *LgfReader {
 
 	return &LgfReader{
-		stream:            r,
-		parser:            brackets.NewParser(r),
-		objects:           make(map[string]string),
-		referencedObjects: make(map[string][]string),
+		stream:   r,
+		parser:   brackets.NewParser(r),
+		objects:  &sync.Map{},
+		waitRead: make(chan struct{}, 1),
+		muRead:   &sync.RWMutex{},
 	}
 
 }
@@ -53,6 +57,35 @@ func getKeyValue(objectType int, id ...int) string {
 
 	return key
 }
+func (r *LgfReader) getReferencedObjectValue(key string) (string, string, bool) {
+
+	r.muRead.RLock()
+	defer r.muRead.RUnlock()
+
+	val, ok := r.objects.Load(key)
+
+	if ok {
+		valueUuid := val.([]string)
+		return valueUuid[0], valueUuid[1], true
+	}
+
+	return "", "", false
+}
+
+func (r *LgfReader) getObjectValue(key string) (string, bool) {
+
+	r.muRead.RLock()
+	defer r.muRead.RUnlock()
+
+	val, ok := r.objects.Load(key)
+
+	if ok {
+
+		return val.(string), true
+	}
+
+	return "", false
+}
 
 func (r *LgfReader) ReferencedObjectValue(objectType int, id ...int) (value, uuid string) {
 
@@ -61,14 +94,14 @@ func (r *LgfReader) ReferencedObjectValue(objectType int, id ...int) (value, uui
 	}
 
 	key := getKeyValue(objectType, id...)
-	if valueUuid, ok := r.referencedObjects[key]; ok {
-		return valueUuid[0], valueUuid[1]
+	if value, uuid, ok := r.getReferencedObjectValue(key); ok {
+		return value, uuid
 	}
 
-	r.readTill(objectType, id...)
+	r.readTill(objectType, key)
 
-	if valueUuid, ok := r.referencedObjects[key]; ok {
-		return valueUuid[0], valueUuid[1]
+	if value, uuid, ok := r.getReferencedObjectValue(key); ok {
+		return value, uuid
 	}
 
 	log.Printf("error get referenced object value for type <%d> & id <%d>", objectType, id)
@@ -83,13 +116,13 @@ func (r *LgfReader) ObjectValue(objectType int, id ...int) (value string) {
 	}
 
 	key := getKeyValue(objectType, id...)
-	if value, ok := r.objects[key]; ok {
+	if value, ok := r.getObjectValue(key); ok {
 		return value
 	}
 
-	r.readTill(objectType, id...)
+	r.readTill(objectType, key)
 
-	if value, ok := r.objects[key]; ok {
+	if value, ok := r.getObjectValue(key); ok {
 		return value
 	}
 
@@ -114,11 +147,10 @@ func (r *LgfReader) Read() bool {
 	return r.curNode != nil
 }
 
-func (r *LgfReader) readTill(object int, id ...int) {
+func (r *LgfReader) readTill(object int, needKey ...string) {
 
-	//return
-	// r.mu.RLock()
-	//defer r.mu.RUnlock()
+	r.muRead.Lock()
+	defer r.muRead.Unlock()
 
 	for r.Read() {
 
@@ -143,9 +175,9 @@ func (r *LgfReader) readTill(object int, id ...int) {
 
 			value := []string{valueNode1, valueNode2}
 
-			r.referencedObjects[key] = value
+			r.objects.Store(key, value)
 
-			if len(id) > 0 && objectType == object && keyNode == id[0] {
+			if len(needKey) > 0 && objectType == object && key == needKey[0] {
 				break
 			}
 		case ObjectTypeSessionDataSeparatorValue:
@@ -156,12 +188,11 @@ func (r *LgfReader) readTill(object int, id ...int) {
 
 			valueNode := node.Get(1, 1)
 
-			r.objects[key] = valueNode
+			r.objects.Store(key, valueNode)
 
-			if len(id) > 1 &&
+			if len(needKey) > 1 &&
 				objectType == object &&
-				keyNode == id[0] &&
-				key2Node == id[1] {
+				key == needKey[0] {
 				break
 			}
 
@@ -173,9 +204,9 @@ func (r *LgfReader) readTill(object int, id ...int) {
 
 			valueNode := node.Get(1)
 
-			r.objects[key] = valueNode
+			r.objects.Store(key, valueNode)
 
-			if len(id) > 0 && objectType == object && keyNode == id[0] {
+			if len(needKey) > 0 && objectType == object && key == needKey[0] {
 				break
 			}
 

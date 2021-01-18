@@ -141,7 +141,7 @@ func Test_readTill(t *testing.T) {
 			r := strings.NewReader(tt.metadata)
 			objects := NewLgfReader(r)
 
-			objects.readTill(0, 0)
+			objects.readTill(0, "0.0")
 
 		})
 	}

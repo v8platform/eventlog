@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -112,9 +113,16 @@ func (r *LgpReader) readEvents(stream EventsStream, ctx context.Context) {
 
 	limiter := make(chan struct{}, cap(stream))
 	pp.Println("limiter", cap(limiter))
+	wg := &sync.WaitGroup{}
+	done := make(chan struct{})
+
 	for {
 		select {
 		case <-r.stopChan:
+			return
+		case <-done:
+			wg.Wait()
+			close(stream)
 			return
 		case <-ctx.Done():
 			return
@@ -123,15 +131,19 @@ func (r *LgpReader) readEvents(stream EventsStream, ctx context.Context) {
 			node, n := p.NextNode()
 			r.offset += int64(n)
 			if node == nil {
-				return
+				close(done)
+				break
 			}
+			wg.Add(1)
 			go func(n brackets.Node) {
 				stream <- parseEventLogItemData(n, r.objects)
 				<-limiter
+				wg.Done()
 			}(node)
 
 		}
 	}
+
 }
 
 func (r *LgpReader) StreamRead(ctx context.Context, bufSize ...int) EventsStream {
@@ -263,11 +275,11 @@ func parseEventLogItemData(parsedData brackets.Node, objects Objects) Event {
 	event.AddPort = objects.ObjectValue(ObjectTypeAddPorts, parsedData.Int(15))
 	event.Session = parsedData.Int64(16)
 
-	sessionDataSeparators := getSessionDataSeparators(parsedData.GetNode(18), objects)
-
-	if len(sessionDataSeparators) > 0 {
-		event.SessionDataSeparators = sessionDataSeparators
-	}
+	//sessionDataSeparators := getSessionDataSeparators(parsedData.GetNode(18), objects)
+	//
+	//if len(sessionDataSeparators) > 0 {
+	//	event.SessionDataSeparators = sessionDataSeparators
+	//}
 
 	return event
 
