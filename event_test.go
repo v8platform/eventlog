@@ -53,8 +53,8 @@ func Test_parseEventLogItemData(t *testing.T) {
 
 			r := strings.NewReader(tt.data)
 			parser := brackets.NewParser(r)
-
-			if got := parseEventLogItemData(parser.NextNode(), tt.metadata); !reflect.DeepEqual(got, tt.want) {
+			node, _ := parser.NextNode()
+			if got := parseEventLogItemData(node, tt.metadata); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("parseEventLogItemData() = %v, want %v", got, tt.want)
 			}
 		})
@@ -91,7 +91,7 @@ func Test_parseEventLogFiles(t *testing.T) {
 
 	parser := brackets.NewParser(fileLog)
 
-	nodes := parser.ReadAllNodes()
+	nodes, _ := parser.ReadAllNodes()
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -113,7 +113,7 @@ func Test_ParseEvents(t *testing.T) {
 
 	parser := brackets.NewParser(fileLog)
 
-	nodes := parser.ReadAllNodes()
+	nodes, _ := parser.ReadAllNodes()
 	var events []Event
 	for _, node := range nodes {
 		events = append(events, parseEventLogItemData(node, objects))

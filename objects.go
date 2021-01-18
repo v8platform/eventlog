@@ -5,6 +5,7 @@ import (
 	"github.com/v8platform/brackets"
 	"io"
 	"log"
+	"sync"
 )
 
 type LgfReader struct {
@@ -13,6 +14,7 @@ type LgfReader struct {
 	referencedObjects map[string][]string
 	parser            *brackets.Parser
 	curNode           brackets.Node
+	mu                sync.RWMutex
 }
 
 const (
@@ -108,11 +110,15 @@ func (r *LgfReader) Read() bool {
 
 	r.initParser()
 
-	r.curNode = r.parser.NextNode()
+	r.curNode, _ = r.parser.NextNode()
 	return r.curNode != nil
 }
 
 func (r *LgfReader) readTill(object int, id ...int) {
+
+	//return
+	// r.mu.RLock()
+	//defer r.mu.RUnlock()
 
 	for r.Read() {
 

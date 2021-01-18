@@ -1,14 +1,18 @@
 package eventlog
 
 import (
+	"context"
 	"time"
 )
 
 type EventsStream chan Event
 
 type EventReader interface {
+	SetOffset(offset int64) (int64, error)
+	Offset() int64
 	Read() *Event
-	StreamRead(bufSize ...int) EventsStream
+	Stream(ctx context.Context, events EventsStream)
+	StreamRead(ctx context.Context, bufSize ...int) EventsStream
 }
 
 type Event struct {

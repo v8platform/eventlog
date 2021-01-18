@@ -1,11 +1,15 @@
 package eventlog
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"github.com/k0kubun/pp"
 	"github.com/v8platform/brackets"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -16,14 +20,67 @@ var defaultOptions = LgpReaderOptions{}
 type LgpReaderOptions struct {
 	DirLgpFile string
 	LgfFile    string
-	LgfStream  io.ReadCloser
+	LgfStream  io.ReadSeekCloser
+	LgfOffset  int64
+	Offset     int64
 }
 
 type LgpReader struct {
-	stream   io.ReadCloser
+	stream   io.ReadSeekCloser
 	parser   *brackets.Parser
 	objects  Objects
+	offset   int64
 	stopChan chan struct{}
+
+	uuid    string
+	version string
+}
+
+func (r *LgpReader) SetOffset(offset int64) (int64, error) {
+
+	if r.offset == offset {
+		return 0, nil
+	}
+
+	n, err := r.stream.Seek(offset, io.SeekStart)
+	if err != nil {
+		return n, err
+	}
+
+	r.offset = offset
+
+	return n, nil
+}
+
+func (r *LgpReader) Offset() int64 {
+
+	return r.offset
+}
+
+func (r *LgpReader) readMetadata() {
+
+	currentOffset := r.offset
+
+	if currentOffset > 0 {
+		_, _ = r.SetOffset(0)
+	}
+
+	br := bufio.NewReader(r.stream)
+
+	versionString, _ := br.ReadString('\n')
+	uuidString, _ := br.ReadString('\n')
+
+	r.offset, _ = r.stream.Seek(currentOffset, io.SeekStart)
+
+	versionString = string(trapBOM([]byte(versionString)))
+	r.version = strings.TrimSpace(versionString)
+	r.uuid = strings.TrimSpace(uuidString)
+
+}
+
+func trapBOM(b []byte) []byte {
+	trimmedBytes := bytes.Trim(b, "\xef\xbb\xbf")
+	return trimmedBytes
 }
 
 func (r *LgpReader) Read() *Event {
@@ -33,8 +90,8 @@ func (r *LgpReader) Read() *Event {
 
 func (r *LgpReader) readEvent() *Event {
 
-	node := r.parser.NextNode()
-
+	node, n := r.parser.NextNode()
+	r.offset += int64(n)
 	if node == nil {
 		return nil
 	}
@@ -53,6 +110,8 @@ func (r *LgpReader) readEvents(stream EventsStream, ctx context.Context) {
 
 	p := r.parser
 
+	limiter := make(chan struct{}, cap(stream))
+	pp.Println("limiter", cap(limiter))
 	for {
 		select {
 		case <-r.stopChan:
@@ -60,16 +119,22 @@ func (r *LgpReader) readEvents(stream EventsStream, ctx context.Context) {
 		case <-ctx.Done():
 			return
 		default:
-			node := p.NextNode()
+			limiter <- struct{}{}
+			node, n := p.NextNode()
+			r.offset += int64(n)
 			if node == nil {
 				return
 			}
-			stream <- parseEventLogItemData(node, r.objects)
+			go func(n brackets.Node) {
+				stream <- parseEventLogItemData(n, r.objects)
+				<-limiter
+			}(node)
+
 		}
 	}
 }
 
-func (r *LgpReader) StreamRead(bufSize ...int) EventsStream {
+func (r *LgpReader) StreamRead(ctx context.Context, bufSize ...int) EventsStream {
 
 	size := defaultBufSize
 	if len(bufSize) > 1 {
@@ -78,10 +143,18 @@ func (r *LgpReader) StreamRead(bufSize ...int) EventsStream {
 
 	events := make(EventsStream, size)
 
+	r.streamReadEvent(events, ctx)
+
 	return events
 }
 
-func NewLgpReaderFromStream(lgpStream io.ReadCloser, lgfStream io.ReadCloser) (*LgpReader, error) {
+func (r *LgpReader) Stream(ctx context.Context, events EventsStream) {
+
+	r.streamReadEvent(events, ctx)
+
+}
+
+func NewLgpReaderFromStream(lgpStream io.ReadSeekCloser, lgfStream io.ReadSeekCloser) (*LgpReader, error) {
 
 	return &LgpReader{
 		stream:   lgpStream,
@@ -92,6 +165,7 @@ func NewLgpReaderFromStream(lgpStream io.ReadCloser, lgfStream io.ReadCloser) (*
 
 }
 
+//NewLgpReader создает новый читатель журнала регистрации 1С
 func NewLgpReader(path string, opts ...LgpReaderOptions) (*LgpReader, error) {
 
 	lgpStream, err := os.OpenFile(path, os.O_RDONLY, 644)
@@ -115,11 +189,22 @@ func NewLgpReader(path string, opts ...LgpReaderOptions) (*LgpReader, error) {
 		return nil, err
 	}
 
-	return NewLgpReaderFromStream(lgpStream, lgfStream)
+	reader, err := NewLgpReaderFromStream(lgpStream, lgfStream)
+	if err != nil {
+		return nil, err
+	}
+
+	reader.readMetadata()
+
+	if _, err := reader.SetOffset(options.Offset); err != nil {
+		return nil, err
+	}
+
+	return reader, nil
 
 }
 
-func getLgfFile(opt LgpReaderOptions) (io.ReadCloser, error) {
+func getLgfFile(opt LgpReaderOptions) (io.ReadSeekCloser, error) {
 
 	switch {
 
