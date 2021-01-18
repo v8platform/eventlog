@@ -262,6 +262,10 @@ func getData(node brackets.Node, eventType EventType) interface{} {
 
 		parser.Parse(subDataNode, eventType)
 
+		if d, ok := parser.(*ComplexDataMapParser); ok {
+			return d.Data
+		}
+
 		return parser
 
 	default:
