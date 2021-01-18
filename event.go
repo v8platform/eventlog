@@ -29,8 +29,8 @@ type Event struct {
 	Data                  interface{}
 	DataPresentation      string
 	Server                string
-	MainPort              string // TODO to int
-	AddPort               string // TODO to int
+	MainPort              string
+	AddPort               string
 	Session               int64
 	SessionDataSeparators []RefObject
 }
