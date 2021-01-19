@@ -2,17 +2,20 @@ package eventlog
 
 import (
 	"context"
+	"io"
 	"time"
 )
 
-type EventsStream chan Event
-
 type EventReader interface {
-	SetOffset(offset int64) (int64, error)
-	Offset() int64
-	Read() *Event
-	Stream(ctx context.Context, events EventsStream)
-	StreamRead(ctx context.Context, bufSize ...int) EventsStream
+	io.Closer
+	Seek(offset int64) (int64, error)
+	Read(limit int, timeout time.Duration) (items []Event, err error)
+}
+
+type EventCtxReader interface {
+	io.Closer
+	Seek(offset int64) (int64, error)
+	ReadCtx(ctx context.Context, limit int, timeout time.Duration) (items []Event, err error)
 }
 
 type Event struct {
@@ -42,4 +45,30 @@ type Event struct {
 type Objects interface {
 	ReferencedObjectValue(objectType int, id ...int) (value, uuid string)
 	ObjectValue(objectType int, id ...int) (value string)
+}
+
+var empty = struct{}{}
+
+type EventManager struct {
+	Events chan Event
+	Poller Poller
+	reader EventReader
+
+	stop chan struct{}
+}
+
+func (m *EventManager) Start() {
+	if m.Poller == nil {
+		panic("manager: can't start without a poller")
+	}
+}
+
+func (m *EventManager) Stop() {
+	m.stop <- empty
+}
+
+func (m *EventManager) Poll(dest chan Event, stop chan struct{}) {
+	if m.Poller == nil {
+		panic("manager: can't start without a poller")
+	}
 }
