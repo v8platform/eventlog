@@ -10,34 +10,29 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 )
-
-const defaultBufSize = 10
 
 var defaultOptions = LgpReaderOptions{}
 
 type LgpReaderOptions struct {
-	DirLgpFile string
-	LgfFile    string
-	LgfStream  io.ReadSeekCloser
-	LgfOffset  int64
-	Offset     int64
+	LgfDir    string
+	LgfFile   string
+	LgfStream io.ReadSeekCloser
+	LgfOffset int64
+	Offset    int64
 }
 
 type LgpReader struct {
-	stream   io.ReadSeekCloser
-	parser   *brackets.Parser
-	objects  Objects
-	offset   int64
-	stopChan chan struct{}
-
+	stream  io.ReadSeekCloser
+	parser  *brackets.Parser
+	objects Objects
+	offset  int64
 	uuid    string
 	version string
 }
 
-func (r *LgpReader) SetOffset(offset int64) (int64, error) {
+func (r *LgpReader) Seek(offset int64) (int64, error) {
 
 	if r.offset == offset {
 		return 0, nil
@@ -60,121 +55,57 @@ func (r *LgpReader) Offset() int64 {
 
 func (r *LgpReader) readMetadata() {
 
-	currentOffset := r.offset
-
-	if currentOffset > 0 {
-		_, _ = r.SetOffset(0)
-	}
-
 	br := bufio.NewReader(r.stream)
 
-	versionString, _ := br.ReadString('\n')
+	versionBytes, _ := br.ReadBytes('\n')
 	uuidString, _ := br.ReadString('\n')
+	versionBytes = bytes.Trim(versionBytes, "\xef\xbb\xbf")
 
-	r.offset, _ = r.stream.Seek(currentOffset, io.SeekStart)
-
-	versionString = string(trapBOM([]byte(versionString)))
-	r.version = strings.TrimSpace(versionString)
+	r.version = strings.TrimSpace(string(versionBytes))
 	r.uuid = strings.TrimSpace(uuidString)
 
 }
 
-func trapBOM(b []byte) []byte {
-	trimmedBytes := bytes.Trim(b, "\xef\xbb\xbf")
-	return trimmedBytes
+func (r *LgpReader) Read(limit int, timeout time.Duration) (items []Event, err error) {
+
+	return r.read(context.Background(), limit, timeout)
 }
 
-func (r *LgpReader) Read() *Event {
-
-	return r.readEvent()
+func (r *LgpReader) ReadCtx(ctx context.Context, limit int, timeout time.Duration) (items []Event, err error) {
+	return r.read(ctx, limit, timeout)
 }
 
-func (r *LgpReader) readEvent() *Event {
+func (r *LgpReader) read(ctx context.Context, limit int, timeout time.Duration) (items []Event, err error) {
 
-	node, n := r.parser.NextNode()
-	r.offset += int64(n)
-	if node == nil {
-		return nil
+	var timeoutC <-chan time.Time
+
+	if timeout > 0 {
+		timeoutC = time.After(timeout)
 	}
-
-	e := parseEventLogItemData(node, r.objects)
-	return &e
-}
-
-func (r *LgpReader) streamReadEvent(stream EventsStream, ctx context.Context) {
-
-	go r.readEvents(stream, ctx)
-
-}
-
-func (r *LgpReader) readEvents(stream EventsStream, ctx context.Context) {
-
-	p := r.parser
-
-	limiter := make(chan struct{}, cap(stream))
-	pp.Println("limiter", cap(limiter))
-	wg := &sync.WaitGroup{}
-	done := make(chan struct{})
 
 	for {
 		select {
-		case <-r.stopChan:
-			return
-		case <-done:
-			wg.Wait()
-			close(stream)
-			return
 		case <-ctx.Done():
+			return items, ctx.Err()
+		case <-timeoutC:
 			return
 		default:
-			limiter <- struct{}{}
-			node, n := p.NextNode()
+
+			if limit > 0 && len(items) == limit {
+				return items, nil
+			}
+
+			node, n := r.parser.NextNode()
 			r.offset += int64(n)
 			if node == nil {
-				close(done)
-				break
+				return items, io.EOF
 			}
-			wg.Add(1)
-			go func(n brackets.Node) {
-				stream <- parseEventLogItemData(n, r.objects)
-				<-limiter
-				wg.Done()
-			}(node)
+			event := parseEventLogItemData(node, r.objects)
+
+			items = append(items, event)
 
 		}
 	}
-
-}
-
-func (r *LgpReader) StreamRead(ctx context.Context, bufSize ...int) EventsStream {
-
-	size := defaultBufSize
-	if len(bufSize) > 1 {
-		size = bufSize[0]
-	}
-
-	events := make(EventsStream, size)
-
-	r.streamReadEvent(events, ctx)
-
-	return events
-}
-
-func (r *LgpReader) Stream(ctx context.Context, events EventsStream) {
-
-	r.streamReadEvent(events, ctx)
-
-}
-
-func NewLgpReaderFromStream(lgpStream io.ReadSeekCloser, lgfStream io.ReadSeekCloser) (*LgpReader, error) {
-
-	return &LgpReader{
-		stream:   lgpStream,
-		parser:   brackets.NewParser(lgpStream),
-		objects:  NewLgfReader(lgfStream),
-		stopChan: make(chan struct{}),
-	}, nil
-
 }
 
 //NewLgpReader создает новый читатель журнала регистрации 1С
@@ -191,8 +122,8 @@ func NewLgpReader(path string, opts ...LgpReaderOptions) (*LgpReader, error) {
 		options = opts[0]
 	}
 
-	if len(options.DirLgpFile) == 0 {
-		options.DirLgpFile = filepath.Dir(path)
+	if len(options.LgfDir) == 0 {
+		options.LgfDir = filepath.Dir(path)
 	}
 
 	lgfStream, err := getLgfFile(options)
@@ -201,15 +132,19 @@ func NewLgpReader(path string, opts ...LgpReaderOptions) (*LgpReader, error) {
 		return nil, err
 	}
 
-	reader, err := NewLgpReaderFromStream(lgpStream, lgfStream)
-	if err != nil {
-		return nil, err
+	reader := &LgpReader{
+		stream:  lgpStream,
+		parser:  brackets.NewParser(lgpStream),
+		objects: NewLgfReader(lgfStream),
 	}
 
 	reader.readMetadata()
 
-	if _, err := reader.SetOffset(options.Offset); err != nil {
-		return nil, err
+	if options.Offset > 0 {
+		if _, err := lgpStream.Seek(options.Offset, io.SeekStart); err != nil {
+			return nil, err
+		}
+		reader.offset = options.Offset
 	}
 
 	return reader, nil
@@ -233,7 +168,7 @@ func getLgfFile(opt LgpReaderOptions) (io.ReadSeekCloser, error) {
 		return lgfStream, nil
 	default:
 
-		LgfFile := filepath.Join(opt.DirLgpFile, "1Cv8.lgf")
+		LgfFile := filepath.Join(opt.LgfDir, "1Cv8.lgf")
 
 		lgfStream, err := os.OpenFile(LgfFile, os.O_RDONLY, 644)
 		if err != nil {
@@ -359,7 +294,7 @@ func getData(node brackets.Node, eventType EventType) interface{} {
 
 		parser.Parse(subDataNode, eventType)
 
-		if d, ok := parser.(*ComplexDataMapParser); ok {
+		if d, ok := parser.(*complexDataMapParser); ok {
 			return d.Data
 		}
 
@@ -379,61 +314,4 @@ func getTransactionData(data brackets.Node) (int64, time.Time) {
 	transactionNumber := From16To10(data.Get(1))
 
 	return transactionNumber, transactionDate
-}
-
-type ComplexDataType int
-
-type ComplexData interface {
-	Parse(node brackets.Node, eventType EventType)
-}
-
-const (
-	UnknownComplexData      ComplexDataType = 0
-	AuthenticationErrorData ComplexDataType = 1
-	AuthenticationData      ComplexDataType = 6
-	UpdateUserData          ComplexDataType = 30
-)
-
-type ComplexDataMapParser struct {
-	fn   func(data map[string]interface{}, node brackets.Node, eventType EventType)
-	Data map[string]interface{}
-}
-
-func (p *ComplexDataMapParser) Parse(node brackets.Node, eventType EventType) {
-
-	p.fn(p.Data, node, eventType)
-}
-
-func NewComplexDataMapParser(fn func(data map[string]interface{}, node brackets.Node, eventType EventType)) *ComplexDataMapParser {
-	return &ComplexDataMapParser{
-		fn:   fn,
-		Data: make(map[string]interface{}),
-	}
-}
-
-func (c ComplexDataType) Parser() ComplexData {
-
-	switch c {
-	case UnknownComplexData:
-		return nil
-	case AuthenticationErrorData:
-		return NewComplexDataMapParser(func(data map[string]interface{}, node brackets.Node, eventType EventType) {
-			data["Пользователь ОС"] = getData(node.GetNode(1), eventType)
-		})
-	case AuthenticationData:
-		return NewComplexDataMapParser(func(data map[string]interface{}, node brackets.Node, eventType EventType) {
-			data["Имя"] = getData(node.GetNode(1), eventType)
-			data["Текущий пользователь ОС"] = getData(node.GetNode(2), eventType)
-		})
-	case UpdateUserData:
-		return NewComplexDataMapParser(func(data map[string]interface{}, node brackets.Node, eventType EventType) {
-			data["Аутентификация ОС"] = getData(node.GetNode(1), eventType)
-			data["Аутентификация 1С:Предприятия"] = getData(node.GetNode(2), eventType)
-			data["Запрещено изменять пароль"] = getData(node.GetNode(3), eventType)
-			data["Имя"] = getData(node.GetNode(4), eventType)
-			data["Основной язык"] = getData(node.GetNode(5), eventType)
-		})
-	default:
-		return nil
-	}
 }
