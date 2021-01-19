@@ -1,6 +1,7 @@
 package eventlog
 
 import (
+	"github.com/k0kubun/pp"
 	"testing"
 	"time"
 )
@@ -35,6 +36,13 @@ func TestLgpReader_Offset(t *testing.T) {
 			0,
 			1820103, // full file size
 		},
+		{
+			"big",
+			"./tests/big/20210117000000.lgp",
+			0,
+			0,
+			1820103, // full file size
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -47,7 +55,8 @@ func TestLgpReader_Offset(t *testing.T) {
 				_, _ = r.Seek(tt.offset)
 			}
 
-			_, err = r.Read(tt.readCount, 2*time.Second)
+			events, err := r.Read(tt.readCount, 2*time.Second)
+			pp.Println("events", len(events))
 
 			if got := r.Offset(); got != tt.want {
 				t.Errorf("Offset() = %v, want %v", got, tt.want)

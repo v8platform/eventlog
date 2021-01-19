@@ -40,7 +40,8 @@ func (p *LongPoller) Poll(r EventReader, dest chan Event, stop chan struct{}) {
 
 		for _, event := range events {
 
-			if !dry.SliceContains(p.AllowedSeverity, event.Severity) {
+			if len(p.AllowedSeverity) > 0 &&
+				!dry.SliceContains(p.AllowedSeverity, event.Severity) {
 				continue
 			}
 

@@ -4,12 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"github.com/k0kubun/pp"
 	"github.com/v8platform/brackets"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -77,32 +77,56 @@ func (r *LgpReader) ReadCtx(ctx context.Context, limit int, timeout time.Duratio
 
 func (r *LgpReader) read(ctx context.Context, limit int, timeout time.Duration) (items []Event, err error) {
 
+	if limit < 1 {
+		// Указывать лимит считывания обязательно
+		// уменьшает нагрузку на ЦП и память
+		return nil, nil
+	}
+
 	var timeoutC <-chan time.Time
 
 	if timeout > 0 {
 		timeoutC = time.After(timeout)
 	}
 
+	var count int
+	mu := &sync.Mutex{}
+	wg := &sync.WaitGroup{}
+	//limiter := make(chan struct{}, 10)
 	for {
 		select {
 		case <-ctx.Done():
+			wg.Wait()
 			return items, ctx.Err()
 		case <-timeoutC:
+			wg.Wait()
 			return
 		default:
 
-			if limit > 0 && len(items) == limit {
+			if limit > 0 && count == limit {
+				wg.Wait()
 				return items, nil
 			}
 
+			//limiter <-empty
 			node, n := r.parser.NextNode()
 			r.offset += int64(n)
 			if node == nil {
+				wg.Wait()
 				return items, io.EOF
 			}
-			event := parseEventLogItemData(node, r.objects)
 
-			items = append(items, event)
+			count++
+			wg.Add(1)
+
+			go func(n brackets.Node) {
+				event := parseEventLogItemData(n, r.objects)
+				mu.Lock()
+				defer mu.Unlock()
+				defer wg.Done()
+				items = append(items, event)
+				//<-limiter
+			}(node)
 
 		}
 	}
