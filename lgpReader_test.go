@@ -55,7 +55,7 @@ func TestLgpReader_Offset(t *testing.T) {
 				_, _ = r.Seek(tt.offset)
 			}
 
-			events, err := r.Read(tt.readCount, 2*time.Second)
+			events, err := r.Read(tt.readCount, 20*time.Second)
 			pp.Println("events", len(events))
 
 			if got := r.Offset(); got != tt.want {

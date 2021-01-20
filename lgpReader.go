@@ -28,8 +28,8 @@ type LgpReader struct {
 	parser  *brackets.Parser
 	objects Objects
 	offset  int64
-	uuid    string
-	version string
+	Uuid    string
+	Version string
 }
 
 func (r *LgpReader) Seek(offset int64) (int64, error) {
@@ -61,8 +61,10 @@ func (r *LgpReader) readMetadata() {
 	uuidString, _ := br.ReadString('\n')
 	versionBytes = bytes.Trim(versionBytes, "\xef\xbb\xbf")
 
-	r.version = strings.TrimSpace(string(versionBytes))
-	r.uuid = strings.TrimSpace(uuidString)
+	r.Version = strings.TrimSpace(string(versionBytes))
+	r.Uuid = strings.TrimSpace(uuidString)
+
+	r.offset, _ = r.stream.Seek(0, io.SeekCurrent)
 
 }
 
