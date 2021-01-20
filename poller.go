@@ -2,6 +2,7 @@ package eventlog
 
 import (
 	"github.com/xelaj/go-dry"
+	"io"
 	"time"
 )
 
@@ -21,12 +22,17 @@ type LongPoller struct {
 	//	SeverityNote  => "Примечание"
 	//
 	AllowedSeverity []SeverityType
+
+	LastErr error
 }
 
 // Poll does long polling.
 func (p *LongPoller) Poll(r EventReader, dest chan Event, stop chan struct{}) {
 
+	p.LastErr = nil
+
 	for {
+
 		select {
 		case <-stop:
 			return
@@ -34,18 +40,29 @@ func (p *LongPoller) Poll(r EventReader, dest chan Event, stop chan struct{}) {
 		}
 
 		events, err := r.Read(p.Limit, p.Timeout)
-		if err != nil {
+		p.LastErr = err
+
+		if err != nil && err != io.EOF {
+			return
+		}
+
+		p.pushEvents(events, dest)
+
+		if p.LastErr == io.EOF {
+			return
+		}
+	}
+}
+
+func (p *LongPoller) pushEvents(events []Event, dest chan Event) {
+
+	for _, event := range events {
+
+		if len(p.AllowedSeverity) > 0 &&
+			!dry.SliceContains(p.AllowedSeverity, event.Severity) {
 			continue
 		}
 
-		for _, event := range events {
-
-			if len(p.AllowedSeverity) > 0 &&
-				!dry.SliceContains(p.AllowedSeverity, event.Severity) {
-				continue
-			}
-
-			dest <- event
-		}
+		dest <- event
 	}
 }

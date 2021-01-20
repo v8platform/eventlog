@@ -8,38 +8,45 @@ import (
 
 type EventReader interface {
 	io.Closer
-	Seek(offset int64) (int64, error)
+	seekReader
 	Read(limit int, timeout time.Duration) (items []Event, err error)
 }
 
-type EventCtxReader interface {
+type CtxEventReader interface {
 	io.Closer
-	Seek(offset int64) (int64, error)
+	seekReader
 	ReadCtx(ctx context.Context, limit int, timeout time.Duration) (items []Event, err error)
 }
 
+type seekReader interface {
+	Offset() int64
+	Seek(offset int64) (int64, error)
+}
+
 type Event struct {
-	Date                  time.Time
-	TransactionStatus     TransactionStatusType
-	TransactionDate       time.Time
-	TransactionNumber     int64
-	UserUuid              string
-	User                  string
-	Computer              string
-	Application           ApplicationType
-	Connection            int64
-	Event                 EventType
-	Severity              SeverityType
-	Comment               string
-	MetadataUuid          string
-	Metadata              string
-	Data                  interface{}
-	DataPresentation      string
-	Server                string
-	MainPort              string
-	AddPort               string
-	Session               int64
-	SessionDataSeparators []RefObject
+	Date              time.Time
+	TransactionStatus TransactionStatusType
+	TransactionDate   time.Time
+	TransactionNumber int64
+	UserUuid          string
+	User              string
+	Computer          string
+	Application       ApplicationType
+	Connection        int64
+	Event             EventType
+	Severity          SeverityType
+	Comment           string
+	MetadataUuid      string
+	Metadata          string
+	Data              interface{}
+	DataPresentation  string
+	Server            string
+	MainPort          string
+	AddPort           string
+	Session           int64
+	//SessionDataSeparators []
+
+	Offset int64
 }
 
 type Objects interface {

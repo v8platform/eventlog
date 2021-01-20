@@ -15,6 +15,8 @@ import (
 
 var defaultOptions = LgpReaderOptions{}
 
+var _ EventReader = (*LgpReader)(nil)
+
 type LgpReaderOptions struct {
 	LgfDir    string
 	LgfFile   string
@@ -30,6 +32,14 @@ type LgpReader struct {
 	offset  int64
 	Uuid    string
 	Version string
+}
+
+func (r *LgpReader) Close() error {
+	err := r.stream.Close()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (r *LgpReader) Seek(offset int64) (int64, error) {
