@@ -9,10 +9,9 @@ on:
   # You can trigger workflow on push or pull-request event and configure a workflow to run on specific branches or tags
   push:
     branches:
-      - *
+      - develop
+      - master
   pull_request:
-    branches:
-      - *
 
 jobs:
   code_inspection:
