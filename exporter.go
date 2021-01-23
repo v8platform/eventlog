@@ -64,7 +64,7 @@ func (e *Exporter) Start() {
 	if e.Poller == nil {
 		panic("exporter: can't start without a poller")
 	}
-
+	finished := make(chan struct{})
 	stop := make(chan struct{})
 	go e.Poller.Poll(e.eventReader, e.Events, stop)
 
@@ -73,12 +73,14 @@ func (e *Exporter) Start() {
 		// handle incoming updates
 		case event, closed := <-e.Events:
 			if !closed {
+				close(finished)
 				close(stop)
 				return
 			}
 			e.process(event)
 		// call to stop polling
 		case <-e.stop:
+			close(finished)
 			close(stop)
 
 			// TODO Надо дочитать последню партию событий

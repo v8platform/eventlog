@@ -46,7 +46,10 @@ type Event struct {
 	Session           int64
 	//SessionDataSeparators []
 
-	Offset int64
+	Offset      int64
+	Size        int64
+	JournalFile string
+	JournalUUID string
 }
 
 type Objects interface {

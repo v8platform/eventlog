@@ -122,6 +122,7 @@ func (r *LgpReader) read(ctx context.Context, limit int, timeout time.Duration) 
 
 			//limiter <-empty
 			node, n := r.parser.NextNode()
+			start := r.offset
 			r.offset += int64(n)
 			if node == nil {
 				wg.Wait()
@@ -131,14 +132,20 @@ func (r *LgpReader) read(ctx context.Context, limit int, timeout time.Duration) 
 			count++
 			wg.Add(1)
 
-			go func(n brackets.Node) {
-				event := parseEventLogItemData(n, r.objects)
+			go func(n brackets.Node, offset, size int64) {
+
+				event := &Event{
+					Offset: offset,
+					Size:   size,
+				}
+
+				parseEventLogItemData(event, n, r.objects)
 				mu.Lock()
 				defer mu.Unlock()
 				defer wg.Done()
-				items = append(items, event)
+				items = append(items, *event)
 				//<-limiter
-			}(node)
+			}(node, start, int64(n))
 
 		}
 	}
@@ -216,9 +223,7 @@ func getLgfFile(opt LgpReaderOptions) (io.ReadSeekCloser, error) {
 
 }
 
-func parseEventLogItemData(parsedData brackets.Node, objects Objects) Event {
-
-	event := Event{}
+func parseEventLogItemData(event *Event, parsedData brackets.Node, objects Objects) {
 
 	event.Date, _ = time.Parse(`20060102150405`, parsedData.Get(0))
 
@@ -251,8 +256,6 @@ func parseEventLogItemData(parsedData brackets.Node, objects Objects) Event {
 	//if len(sessionDataSeparators) > 0 {
 	//	event.SessionDataSeparators = sessionDataSeparators
 	//}
-
-	return event
 
 }
 
