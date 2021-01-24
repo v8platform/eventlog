@@ -74,16 +74,21 @@ func NewManager(ctx context.Context, opt ManagerOptions) *Manager {
 
 	p := &Manager{
 		queue:       make(chan struct{}, opt.PoolSize),
+		BulkSize:    opt.BulkSize,
 		fileWatcher: watcher.New(),
 		exporters:   map[string]*Exporter{},
 		mu:          sync.Mutex{},
 		stop:        make(chan struct{}),
 		journals:    NewInMemoryJournal(),
+		Ticker:      2 * time.Second,
 	}
 
 	if opt.JournalStorage != nil {
 		p.journals = opt.JournalStorage
 	}
+	p.fileWatcher.AddFilterHook(filterFiles)
+	//fileWatcher.SetMaxEvents(1)
+	p.fileWatcher.FilterOps(watcher.Create, watcher.Write, watcher.Remove)
 
 	go p.process(ctx)
 
@@ -156,6 +161,10 @@ type Manager struct {
 	running bool
 }
 
+func (m *Manager) Wait() {
+	<-m.stop
+}
+
 func (m *Manager) Stop() {
 	close(m.stop)
 	m.fileWatcher.Close()
@@ -217,13 +226,13 @@ func (m *Manager) removeExporter(ctx context.Context, e watcher.Event) {
 func (m *Manager) process(ctx context.Context) {
 
 	fileWatcher := m.fileWatcher
-	fileWatcher.AddFilterHook(filterFiles)
-	//fileWatcher.SetMaxEvents(1)
-	fileWatcher.FilterOps(watcher.Create, watcher.Write, watcher.Remove)
 
 	var err error
 	go func() {
 		err = fileWatcher.Start(m.Ticker)
+		if err != nil {
+			fileWatcher.Close()
+		}
 	}()
 
 	fileWatcher.Wait()

@@ -23,6 +23,7 @@ func TestManager_Watch(t *testing.T) {
 			"simple",
 			ManagerOptions{
 				PoolSize: 10,
+				BulkSize: 10,
 			},
 			args{
 				ctx:    context.Background(),
@@ -38,6 +39,8 @@ func TestManager_Watch(t *testing.T) {
 			if err := m.Watch(tt.args.folder); (err != nil) != tt.wantErr {
 				t.Errorf("Watch() error = %v, wantErr %v", err, tt.wantErr)
 			}
+
+			m.Wait()
 		})
 	}
 }
