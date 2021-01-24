@@ -13,7 +13,7 @@ type ExporterConfig struct {
 
 }
 
-func NewExporter(eventReader EventReader, storage ExporterStorage, config ...ExporterConfig) *Exporter {
+func NewExporter(eventReader EventReader, storage []ExporterStorage, config ...ExporterConfig) *Exporter {
 
 	cfg := ExporterConfig{}
 
@@ -54,7 +54,7 @@ type Exporter struct {
 	//Offset 		int64
 	eventReader EventReader
 
-	storage ExporterStorage
+	storage []ExporterStorage
 	stop    chan struct{}
 }
 
@@ -100,6 +100,8 @@ func (e *Exporter) Stop() error {
 
 func (e *Exporter) process(event Event) {
 
-	e.storage.Push(event)
+	for _, storage := range e.storage {
+		storage.Push(event)
+	}
 
 }

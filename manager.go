@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/radovskyb/watcher"
 	"github.com/xelaj/go-dry"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -33,43 +34,14 @@ type ManagerOptions struct {
 	Folder             []string
 	PoolSize           int
 	IdleCheckFrequency time.Duration
-	Cache              CacheStorage
+	JournalStorage     JournalStorage
 	Exporters          []ExporterStorage
 	BulkSize           int
 }
 
-const (
-	JournalFormatLGP = iota
-	JournalFormatLGD
-)
+func createLgpExporter(file string, offset int64, storage []ExporterStorage, poller Poller, tz *time.Location) (*Exporter, error) {
 
-type lgpJournal struct {
-	File   string
-	UUID   string
-	Offset int64
-	EventReader
-
-	lgfReader *LgfReader
-}
-
-type lgdJournal struct {
-	File   string
-	Offset int64
-	EventReader
-}
-
-type EventJournal interface {
-	CreateExporter(storage ExporterStorage, poller Poller, tz *time.Location) (*Exporter, error)
-	AboveOffset(off int64) bool
-}
-
-func (j *lgpJournal) AboveOffset(off int64) bool {
-	return j.Offset < off
-}
-
-func (j *lgpJournal) CreateExporter(storage ExporterStorage, poller Poller, tz *time.Location) (*Exporter, error) {
-
-	lgfDir := filepath.Dir(j.File)
+	lgfDir := filepath.Dir(file)
 	LgfFile := filepath.Join(lgfDir, lgfFileName)
 	lgfStream, err := os.OpenFile(LgfFile, os.O_RDONLY, 644)
 
@@ -81,10 +53,10 @@ func (j *lgpJournal) CreateExporter(storage ExporterStorage, poller Poller, tz *
 		LgfDir:    lgfDir,
 		LgfFile:   LgfFile,
 		LgfStream: lgfStream,
-		Offset:    j.Offset,
+		Offset:    offset,
 	}
 
-	reader, err := NewLgpReader(j.File, lgpOpts)
+	reader, err := NewLgpReader(file, lgpOpts)
 
 	if err != nil {
 		return nil, err
@@ -98,23 +70,52 @@ func (j *lgpJournal) CreateExporter(storage ExporterStorage, poller Poller, tz *
 
 }
 
-func NewManager(opt ManagerOptions) *Manager {
+func NewManager(ctx context.Context, opt ManagerOptions) *Manager {
 
 	p := &Manager{
-
-		Folder:    opt.Folder,
-		queue:     make(chan struct{}, opt.PoolSize),
-		journals:  make(map[string]EventJournal),
-		watchers:  make(map[string]chan struct{}),
-		exporters: map[string]*Exporter{},
-		mu:        sync.Mutex{},
-		stop:      make(chan struct{}),
+		queue:       make(chan struct{}, opt.PoolSize),
+		fileWatcher: watcher.New(),
+		exporters:   map[string]*Exporter{},
+		mu:          sync.Mutex{},
+		stop:        make(chan struct{}),
+		journals:    NewInMemoryJournal(),
 	}
+
+	if opt.JournalStorage != nil {
+		p.journals = opt.JournalStorage
+	}
+
+	go p.process(ctx)
 
 	return p
 }
 
-type CacheStorage interface {
+type JournalStorage interface {
+	GetOffset(file string) int64
+	SetOffset(file string, off int64)
+}
+
+var _ JournalStorage = (*InMemoryJournal)(nil)
+
+func NewInMemoryJournal() *InMemoryJournal {
+	return &InMemoryJournal{
+		data: &sync.Map{},
+	}
+}
+
+type InMemoryJournal struct {
+	data *sync.Map
+}
+
+func (i InMemoryJournal) GetOffset(file string) int64 {
+	if value, ok := i.data.Load(file); ok {
+		return value.(int64)
+	}
+	return 0
+}
+
+func (i InMemoryJournal) SetOffset(file string, off int64) {
+	i.data.Store(file, off)
 }
 
 func extFilterHook(ext ...string) watcher.FilterFileHookFunc {
@@ -138,122 +139,59 @@ type Manager struct {
 	LiveMode bool     // Auto use live mode
 	BulkSize int
 	Timeout  time.Duration
+	Ticker   time.Duration
+	TZ       *time.Location
 
-	watchers map[string]chan struct{}
+	fileWatcher *watcher.Watcher
 
-	journals  map[string]EventJournal
+	journals  JournalStorage
 	mu        sync.Mutex
 	exporters map[string]*Exporter
 
 	queue chan struct{}
 
-	cache   CacheStorage
 	storage []ExporterStorage
 	stop    chan struct{}
+
+	running bool
 }
 
 func (m *Manager) Stop() {
-
+	close(m.stop)
+	m.fileWatcher.Close()
 }
 
-func (m *Manager) Watch(ctx context.Context, folder string, ticker time.Duration) error {
+func (m *Manager) Running() bool {
+	return m.running
+}
 
-	fileWatcher := watcher.New()
-	fileWatcher.AddFilterHook(filterFiles)
+func (m *Manager) Watch(folder string) error {
 
-	if err := fileWatcher.AddRecursive(folder); err != nil {
+	if err := m.fileWatcher.AddRecursive(folder); err != nil {
 		return err
 	}
 
-	fileWatcher.SetMaxEvents(1)
-	fileWatcher.FilterOps(watcher.Create, watcher.Write, watcher.Remove)
-
-	errChan := make(chan error)
-
-	go func() {
-		errChan <- fileWatcher.Start(ticker)
-	}()
-
-	stopWatcher := make(chan struct{})
-	m.mu.Lock()
-	m.watchers[folder] = stopWatcher
-	m.mu.Unlock()
-
-	deleteWatcher := func() {
-		fileWatcher.Close()
-		m.mu.Lock()
-		delete(m.watchers, folder)
-		m.mu.Unlock()
-	}
-
-	for {
-		select {
-		case err := <-errChan:
-			deleteWatcher()
-			return err
-		case <-stopWatcher:
-			deleteWatcher()
-			return nil
-		case <-m.stop:
-			deleteWatcher()
-			return nil
-		case <-ctx.Done():
-			deleteWatcher()
-			return ctx.Err()
-		case e := <-fileWatcher.Event:
-			switch e.Op {
-
-			case watcher.Write, watcher.Create:
-				m.addExporter(ctx, e)
-			case watcher.Remove:
-				m.removeExporter(ctx, e)
-			}
-
-		}
-	}
+	return nil
 }
 
-func (m *Manager) addExporter(ctx context.Context, event watcher.Event) {
+func (m *Manager) Unwatch(folder string) error {
 
-	fileSize := event.Size()
-	fileName := event.Path
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// TODO Подумать над циклом чтения и записи offset
-	eventJournal, ok := m.journals[fileName]
-	if ok && eventJournal.AboveOffset(fileSize) {
-		return
+	if err := m.fileWatcher.RemoveRecursive(folder); err != nil {
+		return err
 	}
 
-	_, exporterInWork := m.exporters[fileName]
-	if exporterInWork {
-		return
-	}
-	_ = m.waitTurn(ctx)
+	return nil
+}
 
+var ErrLgfNotFound = errors.New("lgf not found")
+
+func (m *Manager) getPoller() Poller {
 	poller := &LongPoller{
 		Limit:   m.BulkSize,
 		Timeout: m.Timeout,
 	}
-
-	exporter, _ := eventJournal.CreateExporter(m.storage[0], poller, time.Local)
-	m.exporters[fileName] = exporter
-
-	go func(key string) {
-
-		exporter.Start()
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		delete(m.exporters, key)
-		m.freeTurn()
-
-	}(fileName)
-
+	return poller
 }
-
-var ErrLgfNotFound = errors.New("lgf not found")
 
 func (m *Manager) getTurn() {
 	m.queue <- struct{}{}
@@ -273,5 +211,89 @@ func (p *Manager) freeTurn() {
 }
 
 func (m *Manager) removeExporter(ctx context.Context, e watcher.Event) {
+
+}
+
+func (m *Manager) process(ctx context.Context) {
+
+	fileWatcher := m.fileWatcher
+	fileWatcher.AddFilterHook(filterFiles)
+	//fileWatcher.SetMaxEvents(1)
+	fileWatcher.FilterOps(watcher.Create, watcher.Write, watcher.Remove)
+
+	var err error
+	go func() {
+		err = fileWatcher.Start(m.Ticker)
+	}()
+
+	fileWatcher.Wait()
+
+	if err != nil {
+		return
+	}
+
+	m.running = true
+
+	for {
+		select {
+		case <-m.stop:
+			return
+		case e := <-m.fileWatcher.Event:
+			switch e.Op {
+			case watcher.Write:
+				m.writeWatcherHook(ctx, e)
+			case watcher.Create:
+				m.createWatcherHook(ctx, e)
+			case watcher.Remove:
+				m.removeWatcherHook(ctx, e)
+			}
+
+		}
+	}
+}
+
+func (m *Manager) writeWatcherHook(ctx context.Context, event watcher.Event) {
+
+	fileName := event.Path
+
+	_, exporterInWork := m.exporters[fileName]
+	if exporterInWork {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// TODO Подумать над циклом чтения и записи offset
+	offset := m.journals.GetOffset(fileName)
+	exporter, err := createLgpExporter(fileName, offset, m.storage, m.getPoller(), m.TZ)
+
+	if err != nil {
+		log.Print(err)
+		return
+	}
+
+	go func(key string) {
+		err := m.waitTurn(ctx)
+		if err != nil {
+			return
+		}
+
+		m.getTurn()
+		exporter.Start()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		delete(m.exporters, key)
+		m.journals.SetOffset(fileName, exporter.eventReader.Offset())
+		m.freeTurn()
+
+	}(fileName)
+}
+
+func (m *Manager) createWatcherHook(ctx context.Context, e watcher.Event) {
+
+}
+
+func (m *Manager) removeWatcherHook(ctx context.Context, e watcher.Event) {
 
 }
